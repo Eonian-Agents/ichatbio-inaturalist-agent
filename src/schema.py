@@ -15,7 +15,7 @@ class ObservationsQueryParams(BaseModel):
     page: Optional[int] = Field(None, ge=1, description="Page number (1-based)")
     per_page: Optional[int] = Field(default=200, ge=1, le=200, description="Number of results per page (1-200)")
     
-    order_by: Optional[Literal["observed_on", "date_observed", "date_added"]] = Field(
+    order_by: Optional[Literal["observed_on", "date_observed", "date_added", "created_at"]] = Field(
         None, description="Field to sort by"
     )
     order: Optional[Literal["asc", "desc"]] = Field(
@@ -32,7 +32,7 @@ class ObservationsQueryParams(BaseModel):
         "CC-BY-NC-SA", "CC-BY-NC-ND"
     ]] = Field(None, description="Filter by license applied to associated photos")
 
-    taxon_id: Optional[int] = Field(None, description="iNat taxon ID. Includes descendant taxa.")
+    taxon_id: Optional[Union[int, str]] = Field(None, description="iNat taxon ID. Can be a comma-separated list. Includes descendant taxa.")
     taxon_name: Optional[str] = Field(None, description="iNat taxon name. Includes descendant taxa. May match multiple taxa.")
     
     iconic_taxa: Optional[List[Literal[
@@ -55,9 +55,9 @@ class ObservationsQueryParams(BaseModel):
     on: Optional[str] = Field(
         None, description="Filter by date string (yyyy-mm-dd, yyyy-mm, or yyyy)"
     )
-    year: Optional[int] = Field(None, description="Filter by year (e.g., 2022)")
-    month: Optional[int] = Field(None, ge=1, le=12, description="Filter by month (1–12)")
-    day: Optional[int] = Field(None, ge=1, le=31, description="Filter by day of the month (1–31)")
+    year: Optional[Union[int, str]] = Field(None, description="Filter by year (e.g., 2022 or '2018,2025')")
+    month: Optional[Union[int, str]] = Field(None, description="Filter by month (1–12) or comma-separated list")
+    day: Optional[Union[int, str]] = Field(None, description="Filter by day of the month (1–31) or comma-separated list")
 
     d1: Optional[date] = Field(None, description="Start of date range (yyyy-mm-dd)")
     d2: Optional[date] = Field(None, description="End of date range (yyyy-mm-dd)")
@@ -99,5 +99,5 @@ class LLMGeneration(BaseModel):
     search_parameters: ObservationsQueryParams = Field()
 
 
-
-
+class INaturalistEntrypointParams(BaseModel):
+    query_start: Optional[str] = Field(None, description="ISO-8601 wall-clock time (UTC) when the user query started")

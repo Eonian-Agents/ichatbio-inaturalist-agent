@@ -28,7 +28,7 @@ class INaturalistAgent(IChatBioAgent):
     async def run(self, context: ResponseContext, request: str, entrypoint: str, params: Optional[BaseModel]):
         match entrypoint:
             case search_inaturalist_observations.entrypoint.id:
-                await search_inaturalist_observations.run(context, request)
+                await search_inaturalist_observations.run(context, request, params)
             case _:
                 raise ValueError()
 

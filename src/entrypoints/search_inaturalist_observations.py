@@ -12,7 +12,9 @@ from openai import AsyncOpenAI
 from tenacity import AsyncRetrying
 
 from util import AIGenerationException, StopOnTerminalErrorOrMaxAttempts
-from schema import LLMGeneration
+from schema import LLMGeneration, INaturalistEntrypointParams
+from log_token_usage import log_token_usage, call_start_now
+from instructor_client import get_client, get_model_name
 
 # This description helps iChatBio understand when to call this entrypoint
 description = """
@@ -22,7 +24,7 @@ Searches for observation data in the iNaturalist observations API. Returns the q
 entrypoint = AgentEntrypoint(
     id="search_inaturalist_observations",
     description=description,
-    parameters=None
+    parameters=INaturalistEntrypointParams
 )
 
 SYSTEM_PROMPT = """
@@ -48,7 +50,7 @@ If multiple values are specified for fields like iconic_taxa or has, include the
 """
 
 
-async def run(context: ResponseContext, request: str):
+async def run(context: ResponseContext, request: str, entrypoint_params: INaturalistEntrypointParams = None):
     """
     Executes this specific entrypoint. See description above. This function yields a sequence of messages that are
     returned one-by-one to iChatBio in response to the request, logging the retrieval process in real time.
@@ -57,9 +59,11 @@ async def run(context: ResponseContext, request: str):
         process: IChatBioAgentProcess
 
         await process.log("Generating search parameters for iNaturalist's observations API")
+        
+        query_start = getattr(entrypoint_params, "query_start", None)
 
         try:
-            params, artifact_description = await _generate_observations_params(request)
+            params, artifact_description = await _generate_observations_params(request, query_start)
         except AIGenerationException as e:
             await process.log(str(e))
             return
@@ -126,12 +130,12 @@ def build_query_url(api_url: str, params: dict) -> str:
     return f"{api_url}?{query_string}"
 
 
-async def _generate_observations_params(request: str):
-    model = os.getenv("AGENTS_LLM", "gpt-5.2")
+async def _generate_observations_params(request: str, query_start: str = None):
+    model = get_model_name()
     try:
-        client: AsyncInstructor = instructor.from_openai(AsyncOpenAI(api_key=os.getenv("INATURALIST_API_KEY")))
+        client: AsyncInstructor = await get_client()
+        call_start = call_start_now()
         result = await client.chat.completions.create(
-            model=model,
             temperature=0,
             response_model=LLMGeneration,
             messages=[
@@ -140,6 +144,8 @@ async def _generate_observations_params(request: str):
             ],
             max_retries=AsyncRetrying(stop=StopOnTerminalErrorOrMaxAttempts(3))
         )
+        
+        log_token_usage("search_inaturalist_observations._generate_observations_params", model, result, query_start=query_start, call_start=call_start)
 
         params = result.model_dump(exclude_none=True, by_alias=True)
         return params['search_parameters'], params['artifact_description']
