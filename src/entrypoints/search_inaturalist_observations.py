@@ -2,6 +2,8 @@ import http.client
 import os
 from urllib.parse import urlencode, quote_plus
 
+import asyncio
+import json
 import httpx
 import instructor
 from ichatbio.agent_response import ResponseContext, IChatBioAgentProcess
@@ -70,12 +72,13 @@ async def run(context: ResponseContext, request: str, entrypoint_params: INatura
 
         await process.log("Generated search parameters:", data=params)
 
+        total_limit = params.get('limit') or 10000 
+        per_page = params.get('per_page', 200)
+        
         api_url = 'https://api.inaturalist.org/v1/observations'
-        api_query_url = build_query_url(api_url, params)
-        await process.log(f"Sending a GET request to iNaturalist observations API at {api_query_url}")
-
+        
         try:
-            response_code, success, response_data = await query_inaturalist_observations(api_query_url)
+            response_code, success, response_data = await query_inaturalist_observations(api_url, params, process, total_limit)
         except Exception as e:
             await process.log(f"An error occurred while querying iNaturalist: {e}")
             return
@@ -84,32 +87,112 @@ async def run(context: ResponseContext, request: str, entrypoint_params: INatura
             await process.log(f"Response code: {response_code} - something went wrong!")
             return
 
-        response_item_count = response_data.get('total_results', )
+        response_item_count = len(response_data.get('results', []))
+        total_available = response_data.get('total_results', response_item_count)
+        
         if response_item_count > 0:
-            await process.create_artifact(
-                mimetype="application/json",
-                description=artifact_description,
-                uris=[api_query_url],
-                metadata={"data_source": "iNaturalist"}
-            )
+            # Build a viewer URL for iNaturalist portal
+            portal_params = params.copy()
+            portal_params.pop('limit', None)
+            portal_params.pop('page', None)
+            portal_params.pop('per_page', None)
+            portal_query_string = urlencode(portal_params, doseq=True)
+            portal_url = f"https://www.inaturalist.org/observations?{portal_query_string}"
+
+            if response_item_count > per_page:
+                # Multiple pages: provide content directly
+                await process.create_artifact(
+                    mimetype="application/json",
+                    description=artifact_description,
+                    content=json.dumps(response_data, indent=2).encode("utf-8"),
+                    metadata={
+                        "data_source": "iNaturalist",
+                        "portal_url": portal_url,
+                        "total_records_retrieved": response_item_count,
+                        "total_available": total_available
+                    }
+                )
+            else:
+                # Single page: use URI
+                api_query_url = build_query_url(api_url, params)
+                await process.create_artifact(
+                    mimetype="application/json",
+                    description=artifact_description,
+                    uris=[api_query_url],
+                    metadata={
+                        "data_source": "iNaturalist",
+                        "portal_url": portal_url
+                    }
+                )
 
             await context.reply(
                 f"In the artifact record contents, the last part of photo URLs (e.g. square.jpg) can be changed to"
-                f" original.jpg to access the original, full-size images. The small photo versions are not of interest."
-                f"So, if you view an observation image with a URL like https://inaturalist-open-data.s3.amazonaws.com/photos/[ID]/square.jpg, you should instead view https://inaturalist-open-data.s3.amazonaws.com/photos/[ID]/original.jpg"
+                f" original.jpg to access the original, full-size images. The small photo versions are not of interest.\n"
+                f"The results can also be viewed in the iNaturalist portal: {portal_url}"
             )
 
         await process.log(
-            f"Found {response_item_count} observation records: {api_query_url}"
+            f"Retrieved {response_item_count} observation records (out of {total_available} available)."
         )
 
 
-async def query_inaturalist_observations(api_query_url):
-    async with httpx.AsyncClient(follow_redirects=True, timeout=20) as client:
+async def query_inaturalist_observations(api_url, params, process, total_limit):
+    all_results = []
+    
+    # Remove 'limit' from params as it's not a real iNat API parameter
+    api_params = params.copy()
+    api_params.pop('limit', None)
+    
+    # First request
+    api_query_url = build_query_url(api_url, api_params)
+    await process.log(f"Sending request to iNaturalist API: {api_query_url}")
+    
+    async with httpx.AsyncClient(follow_redirects=True, timeout=30) as client:
         response = await client.get(api_query_url)
-        code = f"{response.status_code} {http.client.responses.get(response.status_code, '')}"
-        data = response.json() if response.is_success else None
-        return code, response.is_success, data
+        if not response.is_success:
+            code = f"{response.status_code} {http.client.responses.get(response.status_code, '')}"
+            return code, False, None
+        
+        data = response.json()
+        total_available = data.get('total_results', 0)
+        results = data.get('results', [])
+        all_results.extend(results)
+        
+        per_page = api_params.get('per_page', 200)
+        current_page = api_params.get('page', 1)
+        
+        effective_limit = min(total_available, total_limit, 10000) # iNat API cap or user limit
+        
+        if total_available > len(all_results) and len(all_results) < effective_limit:
+            await process.log(f"Found {total_available} records. Paginating to retrieve up to {effective_limit}...")
+            
+            while len(all_results) < effective_limit:
+                current_page += 1
+                batch_params = api_params.copy()
+                batch_params['page'] = current_page
+                batch_url = build_query_url(api_url, batch_params)
+                
+                await process.log(f"Fetching page {current_page} (records {len(all_results)} to {min(len(all_results) + per_page, effective_limit)})...")
+                
+                resp = await client.get(batch_url)
+                if not resp.is_success:
+                    await process.log(f"Warning: Failed to fetch page {current_page}. Stopping with {len(all_results)} records.")
+                    break
+                
+                page_data = resp.json()
+                page_results = page_data.get('results', [])
+                if not page_results:
+                    break
+                
+                all_results.extend(page_results)
+                
+                # Rate limit protection
+                if current_page % 5 == 0:
+                    await asyncio.sleep(0.5)
+        
+        # Update data to contain all results
+        data['results'] = all_results[:effective_limit]
+        return "200 OK", True, data
 
 
 def build_query_url(api_url: str, params: dict) -> str:

@@ -14,6 +14,8 @@ class ObservationsQueryParams(BaseModel):
     q: Optional[str] = Field(None, description="Search query string. Best used alone for free-text searching.")
     page: Optional[int] = Field(None, ge=1, description="Page number (1-based)")
     per_page: Optional[int] = Field(default=200, ge=1, le=200, description="Number of results per page (1-200)")
+    limit: Optional[int] = Field(None, ge=1, description="Total number of results to fetch across all pages. Defaults to 200, but can be set higher (up to 10,000).")
+    
     
     order_by: Optional[Literal["observed_on", "date_observed", "date_added", "created_at"]] = Field(
         None, description="Field to sort by"
