@@ -25,9 +25,9 @@ def call_start_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def _price(model: str) -> dict[str, float]:
+def _price(model: str) -> dict[str, float] | None:
     key = (model or "").strip().lower()
-    return _PRICES.get(key, _FALLBACK)
+    return _PRICES.get(key)
 
 
 def log_token_usage(fn_name: str, model: str, result, query_start: str = None, call_start: str = None) -> None:
@@ -52,7 +52,8 @@ def log_token_usage(fn_name: str, model: str, result, query_start: str = None, c
     prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
     completion_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
     total_tokens = int(getattr(usage, "total_tokens", prompt_tokens + completion_tokens) or 0)
-    cost = (prompt_tokens * p["in"] + completion_tokens * p["out"]) / 1_000_000
+    cost = (prompt_tokens * p["in"] + completion_tokens * p["out"]) / 1_000_000 if p else None
+    cost_text = f"${cost:.6f}" if cost is not None else "unpriced"
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
     print(
@@ -67,7 +68,7 @@ def log_token_usage(fn_name: str, model: str, result, query_start: str = None, c
             f"|| total_tokens:       {total_tokens}\n"
             f"|| call_start:         {call_start or ''}\n"
             f"|| query_start:        {query_start or ''}\n"
-            f"|| cost:               ${cost:.6f}\n"
+            f"|| cost:               {cost_text}\n"
             f"==========================================="
         ),
         flush=True,
