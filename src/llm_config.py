@@ -22,4 +22,5 @@ def create_openai_client() -> AsyncOpenAI:
 def create_instructor_client():
     return instructor.from_openai(
         create_openai_client(), model=MODEL, mode=instructor.Mode.JSON_SCHEMA,
+        reasoning_effort="low",
     )

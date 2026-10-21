@@ -22,6 +22,7 @@ class AIGenerationException(Exception):
             messages.append(f"Error: AI failed to generate valid output after {e.n_attempts} attempts.")
 
         self.message = "\n\n".join(messages)
+        super().__init__(self.message)
 
 
 class StopOnTerminalErrorOrMaxAttempts(stop_base):

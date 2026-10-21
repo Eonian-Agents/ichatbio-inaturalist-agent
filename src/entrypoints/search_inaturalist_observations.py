@@ -1,4 +1,5 @@
 import http.client
+import logging
 import os
 from urllib.parse import urlencode, quote_plus
 
@@ -12,6 +13,7 @@ from instructor import AsyncInstructor
 from instructor.exceptions import InstructorRetryException
 from openai import AsyncOpenAI
 from tenacity import AsyncRetrying
+from pydantic import ValidationError
 
 from util import AIGenerationException, StopOnTerminalErrorOrMaxAttempts
 from schema import LLMGeneration, INaturalistEntrypointParams
@@ -39,6 +41,16 @@ Instructions:
 DO NOT guess.
 
 If a specific field is not implied or mentioned, leave it out.
+
+Preserve every geographic and temporal constraint explicitly given in the request.
+A bounding box MUST include all four fields: swlat, swlng, nelat, and nelng.
+For decimalLatitude A to B, use swlat=A and nelat=B. For decimalLongitude C to D,
+use swlng=C and nelng=D. Use the explicit bounds, not a center coordinate or buffer.
+For an observation date interval, include BOTH d1 (start) and d2 (end).
+For a full year YYYY, use d1=YYYY-01-01 and d2=YYYY-12-31.
+Observation IDs, coordinates, observation dates, and taxon names/IDs are standard
+observation data. Requesting these output fields does not imply photos, extra
+information, or additional search filters.
 
 Dates must be in yyyy-mm-dd, yyyy-mm, or yyyy format where applicable.
 
@@ -221,6 +233,7 @@ async def _generate_observations_params(request: str, query_start: str = None):
         result = await client.chat.completions.create(
             temperature=0,
             response_model=LLMGeneration,
+            context={"user_request": request},
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": request}
@@ -233,4 +246,11 @@ async def _generate_observations_params(request: str, query_start: str = None):
         params = result.model_dump(exclude_none=True, by_alias=True)
         return params['search_parameters'], params['artifact_description']
     except InstructorRetryException as e:
+        for attempt in getattr(e, "failed_attempts", None) or []:
+            if isinstance(attempt.exception, ValidationError):
+                logging.warning(
+                    "iNaturalist parameter validation failed on attempt %s: %s",
+                    attempt.attempt_number,
+                    attempt.exception.errors(include_input=False, include_context=False, include_url=False),
+                )
         raise AIGenerationException(e)

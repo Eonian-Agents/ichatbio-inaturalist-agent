@@ -2,10 +2,14 @@
 This module provides pydantic schema used to craft and validate iNaturalist API queries.
 """
 from datetime import date
+from math import isclose
 from typing import Optional, List, Union, Literal
 
-from pydantic import Field, BaseModel, EmailStr, field_validator
-from pydantic_core import PydanticCustomError
+from pydantic import Field, BaseModel, ValidationInfo, field_validator, model_validator
+
+from request_constraints import (
+    BOUNDING_BOX_FIELDS, explicit_search_constraints, requires_bounding_box,
+)
 
 class ObservationsQueryParams(BaseModel):
     """
@@ -80,6 +84,42 @@ class ObservationsQueryParams(BaseModel):
         None, description="Request additional information such as observation fields, project memberships, etc."
     )
 
+    @model_validator(mode="before")
+    @classmethod
+    def apply_explicit_request_constraints(cls, values, info: ValidationInfo):
+        # The user's labelled numbers are authoritative. Apply them before the
+        # field/range validators so missing or incorrect model values can be repaired.
+        if isinstance(values, dict):
+            request = (info.context or {}).get("user_request", "")
+            return {**values, **explicit_search_constraints(request)}
+        return values
+
+    @field_validator("d1", "d2", "updated_since", mode="before")
+    @classmethod
+    def parse_iso_dates(cls, value):
+        # Instructor validates Python dictionaries in strict mode. JSON date
+        # strings need conversion before strict Pydantic date validation.
+        return date.fromisoformat(value) if isinstance(value, str) else value
+
+    @field_validator("extra", "has", "iconic_taxa")
+    @classmethod
+    def remove_duplicate_options(cls, values):
+        return list(dict.fromkeys(values)) if values is not None else None
+
+    @model_validator(mode="after")
+    def validate_ranges(self):
+        provided = [field for field in BOUNDING_BOX_FIELDS if getattr(self, field) is not None]
+        if provided and len(provided) != len(BOUNDING_BOX_FIELDS):
+            raise ValueError(
+                "A bounding box requires all four coordinates: swlat, swlng, nelat, nelng. "
+                f"Missing: {', '.join(field for field in BOUNDING_BOX_FIELDS if field not in provided)}"
+            )
+        if self.swlat is not None and self.swlat > self.nelat:
+            raise ValueError("Bounding box swlat must be less than or equal to nelat.")
+        if self.d1 is not None and self.d2 is not None and self.d1 > self.d2:
+            raise ValueError("Date range d1 must be less than or equal to d2.")
+        return self
+
     class Config:
         json_schema_extra = {
             "example": {
@@ -99,6 +139,30 @@ class LLMGeneration(BaseModel):
         examples=["Rattus Rattus observations in iNaturalist",
                   "Galax Urceolata iNaturalist observations since 2015"])
     search_parameters: ObservationsQueryParams = Field()
+
+    @model_validator(mode="after")
+    def preserve_request_constraints(self, info: ValidationInfo):
+        request = (info.context or {}).get("user_request", "")
+        params = self.search_parameters.model_dump(mode="json")
+        if requires_bounding_box(request) and any(
+            params[field] is None for field in BOUNDING_BOX_FIELDS
+        ):
+            raise ValueError(
+                "The request specifies a bounding box. Include swlat, swlng, nelat, and nelng; "
+                "do not replace the requested area with an unbounded query."
+            )
+        errors = []
+        for field, expected in explicit_search_constraints(request).items():
+            actual = params[field]
+            matches = (
+                actual is not None and isclose(actual, expected, rel_tol=0, abs_tol=1e-9)
+                if isinstance(expected, float) else actual == expected
+            )
+            if not matches:
+                errors.append(f"{field} must be {expected!r}, received {actual!r}")
+        if errors:
+            raise ValueError("Preserve the request's explicit search constraints: " + "; ".join(errors))
+        return self
 
 
 class INaturalistEntrypointParams(BaseModel):
